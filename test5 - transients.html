@@ -69,6 +69,11 @@
     <div id="beatsSettings" class="control-group settings">
         <label style="color: #ff0055; font-weight: bold;">Beats Warp (Slice)</label>
 
+        <label style="margin-top: 10px;">
+            <input type="checkbox" id="toggleBeatsAuto" checked>
+            Auto (Ableton-ish defaults)
+        </label>
+
         <label style="margin-top: 12px;">Loop Bars: <span id="valBars" class="value-display">1</span></label>
         <input type="number" id="inputBars" value="1" min="1" max="16" step="1">
 
@@ -131,6 +136,7 @@
         valPitch: document.getElementById("valPitch"),
 
         beatsSettings: document.getElementById("beatsSettings"),
+        toggleBeatsAuto: document.getElementById("toggleBeatsAuto"),
         inputBars: document.getElementById("inputBars"),
         sliderTransient: document.getElementById("sliderTransient"),
         sliderXfade: document.getElementById("sliderXfade"),
@@ -160,75 +166,133 @@
         return Number.isFinite(numberValue) ? numberValue : fallback;
     }
 
+    function computeBeatsAutoParams({ origBpm, targetBpm, semitones }) {
+        const pitchRate =
+            typeof Tone.intervalToFrequencyRatio === "function"
+                ? Tone.intervalToFrequencyRatio(semitones)
+                : Math.pow(2, semitones / 12);
+
+        // 0 when pitched up, 1 at -12 semitones, ~3 at -24.
+        const pitchDownFactor = Math.max(0, 1 / pitchRate - 1);
+
+        // Fixed "preserve factor" roughly equivalent to 1/8 or 1/16 mix (0.75)
+        const preserveFactor = 0.75;
+
+        const tempoRatio = origBpm > 0 ? targetBpm / origBpm : 1;
+        const slowDownFactor = Math.max(0, 1 / Math.max(tempoRatio, 0.25) - 1);
+
+        const xfadeMs = clamp(Math.round((10 + pitchDownFactor * 10) * preserveFactor), 6, 22);
+        const transientMs = clamp(Math.round((28 + pitchDownFactor * 25) * preserveFactor), 10, 90);
+        const tailMs = clamp(Math.round((80 + pitchDownFactor * 60 + slowDownFactor * 30) * preserveFactor), 20, 200);
+
+        return { xfadeMs, transientMs, tailMs };
+    }
+
     // --- ANALYSIS ALGORITHM ---
     function analyzeTransients(buffer) {
         const data = buffer.getChannelData(0);
         const sampleRate = buffer.sampleRate;
         const len = data.length;
 
-        // 1. High-Pass Filter (100Hz approx) to remove rumble
-        // y[i] = alpha * (y[i-1] + x[i] - x[i-1])
-        const hpData = new Float32Array(len);
-        const rc = 1.0 / (2 * Math.PI * 100);
+        // 1. High-Pass Filter (120Hz) to remove sub-bass rumble
+        // This isolates the "click" of the kick, preventing false positives from the tail.
+        const hpCutoff = 120;
+        const rc = 1.0 / (2 * Math.PI * hpCutoff);
         const dt = 1.0 / sampleRate;
         const alpha = rc / (rc + dt);
+        const filtered = new Float32Array(len);
         let lastVal = 0;
-        let lastX = 0;
         for(let i=0; i<len; i++) {
-            const x = data[i];
-            const val = alpha * (lastVal + x - lastX);
-            hpData[i] = val;
-            lastX = x;
-            lastVal = val;
+            // Simple 1-pole Highpass: y[i] = alpha * (y[i-1] + x[i] - x[i-1])
+            const input = data[i];
+            const prevInput = (i > 0) ? data[i-1] : 0;
+            const output = alpha * (lastVal + input - prevInput);
+            filtered[i] = output;
+            lastVal = output;
         }
-
-        // 2. RMS Energy (5ms windows)
-        const windowSize = Math.floor(0.005 * sampleRate);
+        
+        // 2. Calculate RMS Energy Profile (10ms windows) on FILTERED data
+        const windowSize = Math.floor(0.01 * sampleRate); // 10ms
         const numWindows = Math.floor(len / windowSize);
-        const energies = new Float32Array(numWindows);
+        const energyProfile = new Float32Array(numWindows);
+        
         for(let i=0; i<numWindows; i++) {
             let sum = 0;
             const start = i * windowSize;
             for(let j=0; j<windowSize; j++) {
-                sum += hpData[start+j] * hpData[start+j];
+                if (start + j < len) {
+                    const s = filtered[start + j]; // Use filtered signal
+                    sum += s * s;
+                }
             }
-            energies[i] = Math.sqrt(sum / windowSize);
+            energyProfile[i] = Math.sqrt(sum / windowSize);
         }
 
-        // 3. Moving Average Threshold
-        const transients = [0]; // Always start at 0
-        const historySize = Math.floor(0.5 / 0.005); // 0.5s history
-        const history = new Float32Array(historySize);
-        let historyIdx = 0;
-        let historySum = 0;
+        // 3. Calculate Spectral Flux (Change in Energy)
+        // This emphasizes the *onset* (attack) and ignores the sustain/tail.
+        const flux = new Float32Array(numWindows);
+        for (let i = 1; i < numWindows; i++) {
+            const diff = energyProfile[i] - energyProfile[i-1];
+            flux[i] = diff > 0 ? diff : 0;
+        }
+
+        // 4. Find Peaks in Flux
+        const peaks = [];
+        const thresholdWindow = Math.floor(0.5 / 0.01); // 0.5s window
+        const multiplier = 1.4; // Sensitivity
         
-        const thresholdRatio = 1.5; // Instant energy > 1.5x average
-        const debounceWindows = Math.floor(0.05 / 0.005); // 50ms
-        let lastHitWindow = -debounceWindows;
-
-        for(let i=0; i<numWindows; i++) {
-            const e = energies[i];
-            const avg = historySum / historySize;
-
-            // Update history
-            historySum -= history[historyIdx];
-            history[historyIdx] = e;
-            historySum += e;
-            historyIdx = (historyIdx + 1) % historySize;
-
-            // Peak Picking
-            // Must be > average * ratio, > absolute floor, and debounced
-            if(i > 5 && e > avg * thresholdRatio && e > 0.02) {
-                if(i - lastHitWindow > debounceWindows) {
-                    // Local max check (simple)
-                    if(e > energies[i-1]) {
-                        transients.push(i * windowSize / sampleRate);
-                        lastHitWindow = i;
+        for (let i = 0; i < numWindows; i++) {
+            // Local average of Flux
+            const start = Math.max(0, i - thresholdWindow);
+            const end = Math.min(numWindows, i + thresholdWindow);
+            let localSum = 0;
+            for (let j = start; j < end; j++) {
+                localSum += flux[j];
+            }
+            const localAvg = localSum / (end - start);
+            
+            // Threshold + Absolute Floor
+            if (flux[i] > localAvg * multiplier && flux[i] > 0.01) {
+                // Local Maxima Check (Radius 50ms)
+                let isMax = true;
+                const range = 5; // 5 * 10ms = 50ms radius
+                for (let k = Math.max(0, i - range); k <= Math.min(numWindows - 1, i + range); k++) {
+                    if (flux[k] > flux[i]) {
+                        isMax = false;
+                        break;
                     }
+                }
+                if (isMax) {
+                    peaks.push({
+                        time: i * windowSize / sampleRate,
+                        flux: flux[i]
+                    });
                 }
             }
         }
-        return transients.sort((a,b) => a-b);
+
+        // 4. Pruning (Debounce)
+        const finalTransients = [0]; // Always start at 0
+        peaks.sort((a, b) => a.time - b.time);
+
+        const minDistance = 0.06; // 60ms minimum gap
+
+        if (peaks.length > 0) {
+            // If first peak is very close to 0, ignore it (we already have 0)
+            if (peaks[0].time > 0.02) {
+                finalTransients.push(peaks[0].time);
+            }
+
+            for (let i = 1; i < peaks.length; i++) {
+                const prev = finalTransients[finalTransients.length - 1];
+                const curr = peaks[i].time;
+                if (curr - prev > minDistance) {
+                    finalTransients.push(curr);
+                }
+            }
+        }
+        
+        return finalTransients.sort((a,b) => a-b);
     }
 
     function drawWaveform(buffer, hits) {
@@ -583,6 +647,19 @@
         const bars = clamp(parseInt(els.inputBars.value, 10) || 1, 1, 16);
         els.valBars.innerText = String(bars);
 
+        const beatsAuto = Boolean(els.toggleBeatsAuto.checked);
+        if (beatsAuto) {
+            const auto = computeBeatsAutoParams({ origBpm, targetBpm, semitones });
+            els.sliderXfade.value = String(auto.xfadeMs);
+            els.sliderTransient.value = String(auto.transientMs);
+            els.sliderTail.value = String(auto.tailMs);
+            els.toggleTailLoop.checked = true;
+        }
+
+        els.sliderXfade.disabled = beatsAuto;
+        els.sliderTransient.disabled = beatsAuto;
+        els.toggleTailLoop.disabled = beatsAuto;
+
         const transientMs = clamp(safeNumber(els.sliderTransient.value, 30), 0, 120);
         els.valTransient.innerText = String(transientMs);
 
@@ -638,6 +715,7 @@
         els.inputOrigBpm,
         els.sliderTargetBpm,
         els.sliderPitch,
+        els.toggleBeatsAuto,
         els.inputBars,
         els.sliderTransient,
         els.sliderXfade,
