@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vibseek Tone.js Prototype</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a1a; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { background: #2b2b2b; padding: 2rem; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); width: 420px; }
+        h2 { margin-top: 0; color: #ff0055; }
+        
+        .control-group { margin-bottom: 1.5rem; }
+        label { display: block; margin-bottom: 0.5rem; font-size: 0.9rem; color: #ccc; }
+        
+        input[type="range"] { width: 100%; }
+        select, input[type="number"] { width: 100%; background: #333; color: white; border: 1px solid #444; padding: 6px; border-radius: 6px; }
+        .value-display { float: right; font-weight: bold; color: #ff0055; }
+        
+        button { background: #444; color: #fff; border: 1px solid #555; padding: 8px 16px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 10px; font-weight: bold; }
+        button:hover { background: #555; }
+        button.active { background: #ff0055; border-color: #ff0055; }
+        
+        .mode-toggles { display: flex; gap: 10px; margin-bottom: 20px; }
+        .mode-toggles button { margin-top: 0; }
+        
+        input[type="file"] { margin-bottom: 20px; width: 100%; }
+        .settings { border-top: 1px solid #444; padding-top: 15px; margin-top: 15px; }
+        .hidden { display: none; }
+        .hint { color: #888; display: block; margin-top: 6px; font-size: 0.8rem; line-height: 1.2; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Vibseek Prototype</h2>
+    
+    <div class="control-group">
+        <label>1. Upload Loop (WAV/MP3)</label>
+        <input type="file" id="fileInput" accept="audio/*">
+    </div>
+    
+    <!-- Visualizer -->
+    <canvas id="visualizer" width="380" height="80" style="width:100%; height:80px; background:#111; border-radius:6px; margin-bottom:20px; border:1px solid #333;"></canvas>
+
+    <div class="control-group">
+        <label>2. Warp Mode</label>
+        <div class="mode-toggles">
+            <button id="btnBeats" class="active" type="button">Beats (Ableton-ish)</button>
+            <button id="btnTexture" type="button">Texture (Granular)</button>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label>Original BPM: <span id="valOrigBpm" class="value-display">130</span></label>
+        <input type="number" id="inputOrigBpm" value="130" min="30" max="300" step="0.1">
+    </div>
+
+    <div class="control-group">
+        <label>Target BPM: <span id="valTargetBpm" class="value-display">130</span></label>
+        <input type="range" id="sliderTargetBpm" min="60" max="200" value="130">
+    </div>
+
+    <div class="control-group">
+        <label>Pitch Shift (Semitones): <span id="valPitch" class="value-display">0</span></label>
+        <input type="range" id="sliderPitch" min="-12" max="12" value="0" step="1">
+    </div>
+
+    <div id="beatsSettings" class="control-group settings">
+        <label style="color: #ff0055; font-weight: bold;">Beats Warp (Slice)</label>
+
+        <label style="margin-top: 12px;">Loop Bars: <span id="valBars" class="value-display">1</span></label>
+        <input type="number" id="inputBars" value="1" min="1" max="16" step="1">
+
+        <label style="margin-top: 12px;">Transient (ms): <span id="valTransient" class="value-display">30</span></label>
+        <input type="range" id="sliderTransient" min="0" max="120" value="30" step="1">
+
+        <label style="margin-top: 12px;">Crossfade (ms): <span id="valXfade" class="value-display">10</span></label>
+        <input type="range" id="sliderXfade" min="0" max="30" value="10" step="1">
+
+        <label style="margin-top: 12px;">
+            <input type="checkbox" id="toggleTailLoop" checked>
+            Fill Gaps (Loop Tail)
+        </label>
+
+        <label style="margin-top: 12px;">Tail Window (ms): <span id="valTail" class="value-display">80</span></label>
+        <input type="range" id="sliderTail" min="10" max="200" value="80" step="1">
+
+        <small class="hint">
+            Adaptive mode detects transients automatically. Use "Fill Gaps" to loop slice tails when slowing down (Ableton style).
+        </small>
+    </div>
+
+    <div id="textureSettings" class="control-group settings hidden">
+        <label style="color: #ff0055; font-weight: bold;">Texture Warp (Granular)</label>
+
+        <label>Grain Size (s): <span id="valGrain" class="value-display">0.07s</span></label>
+        <input type="range" id="sliderGrain" min="0.01" max="0.3" step="0.01" value="0.07">
+
+        <label style="margin-top: 12px;">Overlap (s): <span id="valOverlap" class="value-display">0.03s</span></label>
+        <input type="range" id="sliderOverlap" min="0.00" max="0.15" step="0.01" value="0.03">
+
+        <small class="hint">
+            Texture mode is smoother but less punchy. Smaller grains preserve attack; overlap prevents clicks.
+        </small>
+    </div>
+
+    <button id="playBtn">Play Loop</button>
+</div>
+
+<script>
+    let audioBuffer = null; // Tone.Buffer
+    let detectedTransients = [0];
+    let currentMode = "beats";
+    let engine = null;
+    let isPlaying = false;
+
+    const els = {
+        fileInput: document.getElementById("fileInput"),
+        canvas: document.getElementById("visualizer"),
+        playBtn: document.getElementById("playBtn"),
+        btnBeats: document.getElementById("btnBeats"),
+        btnTexture: document.getElementById("btnTexture"),
+
+        inputOrigBpm: document.getElementById("inputOrigBpm"),
+        sliderTargetBpm: document.getElementById("sliderTargetBpm"),
+        sliderPitch: document.getElementById("sliderPitch"),
+
+        valOrigBpm: document.getElementById("valOrigBpm"),
+        valTargetBpm: document.getElementById("valTargetBpm"),
+        valPitch: document.getElementById("valPitch"),
+
+        beatsSettings: document.getElementById("beatsSettings"),
+        inputBars: document.getElementById("inputBars"),
+        sliderTransient: document.getElementById("sliderTransient"),
+        sliderXfade: document.getElementById("sliderXfade"),
+        toggleTailLoop: document.getElementById("toggleTailLoop"),
+        sliderTail: document.getElementById("sliderTail"),
+
+        valBars: document.getElementById("valBars"),
+        valTransient: document.getElementById("valTransient"),
+        valXfade: document.getElementById("valXfade"),
+        valTail: document.getElementById("valTail"),
+
+        textureSettings: document.getElementById("textureSettings"),
+        sliderGrain: document.getElementById("sliderGrain"),
+        sliderOverlap: document.getElementById("sliderOverlap"),
+        valGrain: document.getElementById("valGrain"),
+        valOverlap: document.getElementById("valOverlap"),
+    };
+
+    const ctx = els.canvas.getContext("2d");
+
+    function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+    }
+
+    function safeNumber(value, fallback) {
+        const numberValue = Number(value);
+        return Number.isFinite(numberValue) ? numberValue : fallback;
+    }
+
+    // --- ANALYSIS ALGORITHM ---
+    function analyzeTransients(buffer) {
+        const data = buffer.getChannelData(0);
+        const sampleRate = buffer.sampleRate;
+        const len = data.length;
+
+        // 1. High-Pass Filter (100Hz approx) to remove rumble
+        // y[i] = alpha * (y[i-1] + x[i] - x[i-1])
+        const hpData = new Float32Array(len);
+        const rc = 1.0 / (2 * Math.PI * 100);
+        const dt = 1.0 / sampleRate;
+        const alpha = rc / (rc + dt);
+        let lastVal = 0;
+        let lastX = 0;
+        for(let i=0; i<len; i++) {
+            const x = data[i];
+            const val = alpha * (lastVal + x - lastX);
+            hpData[i] = val;
+            lastX = x;
+            lastVal = val;
+        }
+
+        // 2. RMS Energy (5ms windows)
+        const windowSize = Math.floor(0.005 * sampleRate);
+        const numWindows = Math.floor(len / windowSize);
+        const energies = new Float32Array(numWindows);
+        for(let i=0; i<numWindows; i++) {
+            let sum = 0;
+            const start = i * windowSize;
+            for(let j=0; j<windowSize; j++) {
+                sum += hpData[start+j] * hpData[start+j];
+            }
+            energies[i] = Math.sqrt(sum / windowSize);
+        }
+
+        // 3. Moving Average Threshold
+        const transients = [0]; // Always start at 0
+        const historySize = Math.floor(0.5 / 0.005); // 0.5s history
+        const history = new Float32Array(historySize);
+        let historyIdx = 0;
+        let historySum = 0;
+        
+        const thresholdRatio = 1.5; // Instant energy > 1.5x average
+        const debounceWindows = Math.floor(0.05 / 0.005); // 50ms
+        let lastHitWindow = -debounceWindows;
+
+        for(let i=0; i<numWindows; i++) {
+            const e = energies[i];
+            const avg = historySum / historySize;
+
+            // Update history
+            historySum -= history[historyIdx];
+            history[historyIdx] = e;
+            historySum += e;
+            historyIdx = (historyIdx + 1) % historySize;
+
+            // Peak Picking
+            // Must be > average * ratio, > absolute floor, and debounced
+            if(i > 5 && e > avg * thresholdRatio && e > 0.02) {
+                if(i - lastHitWindow > debounceWindows) {
+                    // Local max check (simple)
+                    if(e > energies[i-1]) {
+                        transients.push(i * windowSize / sampleRate);
+                        lastHitWindow = i;
+                    }
+                }
+            }
+        }
+        return transients.sort((a,b) => a-b);
+    }
+
+    function drawWaveform(buffer, hits) {
+        const w = els.canvas.width;
+        const h = els.canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        
+        if(!buffer) return;
+        const data = buffer.getChannelData(0);
+        const step = Math.ceil(data.length / w);
+        const amp = h / 2;
+
+        ctx.beginPath();
+        ctx.strokeStyle = "#555";
+        for(let i=0; i<w; i++) {
+            let min = 1.0;
+            let max = -1.0;
+            for(let j=0; j<step; j++) {
+                const val = data[i*step + j];
+                if(val < min) min = val;
+                if(val > max) max = val;
+            }
+            ctx.moveTo(i, amp + min * amp);
+            ctx.lineTo(i, amp + max * amp);
+        }
+        ctx.stroke();
+
+        // Draw Transients
+        ctx.strokeStyle = "#ff9900";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        hits.forEach(t => {
+            const x = (t / buffer.duration) * w;
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+        });
+        ctx.stroke();
+    }
+
+    function setMode(mode) {
+        currentMode = mode;
+
+        els.btnBeats.className = mode === "beats" ? "active" : "";
+        els.btnTexture.className = mode === "texture" ? "active" : "";
+
+        els.beatsSettings.classList.toggle("hidden", mode !== "beats");
+        els.textureSettings.classList.toggle("hidden", mode !== "texture");
+
+        rebuildEngine();
+    }
+
+    function autoDetectBars() {
+        if (!audioBuffer) return;
+        const origBpm = safeNumber(els.inputOrigBpm.value, 130);
+        const beats = (audioBuffer.duration * origBpm) / 60;
+        const bars = Math.max(1, Math.round(beats / 4));
+        els.inputBars.value = String(bars);
+    }
+
+    function createBeatsEngine(buffer, transients) {
+        const master = new Tone.Gain(1).toDestination();
+        const limiter = new Tone.Limiter(-1).connect(master);
+        const highpass = new Tone.Filter(20, "highpass").connect(limiter);
+
+        function getNativeBuffer() {
+            if (typeof AudioBuffer !== "undefined" && buffer instanceof AudioBuffer) return buffer;
+            if (typeof buffer?.get === "function") return buffer.get();
+            return null;
+        }
+
+        const nativeBuffer = getNativeBuffer();
+        const channel0 =
+            nativeBuffer && typeof nativeBuffer.getChannelData === "function" ? nativeBuffer.getChannelData(0) : null;
+        const sampleRate = nativeBuffer ? nativeBuffer.sampleRate : null;
+
+        let part = null;
+
+        let currentOrigBpm = null;
+        let currentBars = null;
+
+        let transientSec = 0.03;
+        let xfadeSec = 0.006;
+        let tailLoopEnabled = true;
+        let tailWindowSec = 0.08;
+        let pitchRate = 1;
+
+        function triggerSlice(time, offset, duration, playbackRate, targetDuration) {
+            const bufferDuration = buffer.duration;
+            const safeOffset = clamp(offset, 0, bufferDuration);
+            const safeDuration = clamp(duration, 0, bufferDuration - safeOffset);
+            if (safeDuration < 0.005) return;
+
+            const realDuration = safeDuration / playbackRate;
+            const maxFade = realDuration / 2;
+
+            // Ableton-style "it just works": always apply a small fade (even if UI is set to 0).
+            const minRelease = 0.006;
+            const release = clamp(Math.max(xfadeSec, minRelease), 0.002, maxFade);
+            const attack = clamp(Math.min(0.004, release * 0.35), 0.002, maxFade);
+
+            // Explicit envelope (like "short fades" in Ableton) to prevent clicks at slice boundaries.
+            // Tone.Player's fadeIn/fadeOut does not reliably apply when using the (offset, duration) overload.
+            const src = new Tone.Player(buffer);
+            const env = new Tone.Gain(0);
+            src.connect(env);
+            env.connect(highpass);
+            src.playbackRate = playbackRate;
+
+            const endTime = time + realDuration;
+            const sustainTime = Math.max(time + attack, endTime - release);
+            env.gain.setValueAtTime(0, time);
+            env.gain.linearRampToValueAtTime(1, time + attack);
+            env.gain.setValueAtTime(1, sustainTime);
+            env.gain.linearRampToValueAtTime(0, endTime);
+
+            src.start(time, safeOffset);
+            // Stop slightly after the envelope reaches 0 to avoid truncating during the fade.
+            src.stop(endTime + 0.01);
+
+            // --- TAIL LOOP LOGIC ---
+            // If the slice finishes (realDuration) before the next beat (targetDuration), loop the tail.
+            if (!tailLoopEnabled) return;
+            
+            // How much time do we need to fill?
+            const gap = targetDuration - realDuration;
+            if (gap < 0.005) return; // No gap or tiny gap
+
+            // Define tail parameters
+            const tailStart = clamp(safeOffset + safeDuration - tailWindowSec, safeOffset, safeOffset + safeDuration);
+            const tailLen = safeOffset + safeDuration - tailStart;
+            if (tailLen < 0.01) return;
+            
+            const tailRealLen = tailLen / playbackRate;
+            const overlapReal = clamp(Math.max(xfadeSec, 0.001), 0, tailRealLen / 2);
+            
+            // Start looping
+            let loopTime = endTime - overlapReal;
+            const fillEnd = time + targetDuration;
+            let guard = 0;
+            
+            while (loopTime < fillEnd && guard < 50) {
+                const remaining = fillEnd - loopTime;
+                const loopDur = Math.min(tailLen, remaining * playbackRate);
+                
+                // Trigger tail slice
+                const tSrc = new Tone.Player(buffer);
+                const tEnv = new Tone.Gain(0);
+                tSrc.connect(tEnv).connect(highpass);
+                tSrc.playbackRate = playbackRate;
+                
+                // Crossfade envelope
+                tEnv.gain.setValueAtTime(0, loopTime);
+                tEnv.gain.linearRampToValueAtTime(1, loopTime + overlapReal);
+                tEnv.gain.setValueAtTime(1, loopTime + (loopDur/playbackRate) - overlapReal);
+                tEnv.gain.linearRampToValueAtTime(0, loopTime + (loopDur/playbackRate));
+                
+                tSrc.start(loopTime, tailStart, loopDur);
+                tSrc.stop(loopTime + (loopDur/playbackRate) + 0.01);
+                
+                loopTime += (tailRealLen - overlapReal);
+                guard++;
+                
+                // Cleanup
+                setTimeout(() => { tSrc.dispose(); tEnv.dispose(); }, (remaining + 1) * 1000);
+            }
+
+            const cleanupAt = endTime + 0.2;
+            const delayMs = Math.max(0, (cleanupAt - Tone.now()) * 1000);
+            setTimeout(() => {
+                src.dispose();
+                env.dispose();
+            }, delayMs);
+        }
+
+        function rebuildLoop(origBpm, bars) {
+            const safeOrigBpm = clamp(origBpm, 30, 300);
+            const safeBars = clamp(bars, 1, 16);
+
+            if (part) { part.dispose(); part = null; }
+
+            // 1. Map Transients to Beats
+            const events = [];
+            const totalDuration = buffer.duration;
+            
+            transients.forEach((startTime, i) => {
+                const nextTime = transients[i+1] || totalDuration;
+                const sliceDur = nextTime - startTime;
+                
+                // Beat Position = Time * (BPM / 60)
+                const beatPos = startTime * (safeOrigBpm / 60);
+                
+                // Convert to Bars:Quarters:Sixteenths for Tone.Part
+                const b = Math.floor(beatPos / 4);
+                const q = Math.floor(beatPos % 4);
+                const s = (beatPos % 1) * 4;
+                const timeStr = `${b}:${q}:${s.toFixed(3)}`;
+
+                events.push({
+                    time: timeStr,
+                    offset: startTime,
+                    dur: sliceDur,
+                    beatDur: sliceDur * (safeOrigBpm / 60) // Duration in beats
+                });
+            });
+
+            // 2. Create Part
+            part = new Tone.Part((time, val) => {
+                // Calculate Target Duration in Seconds based on CURRENT BPM
+                const currentBpm = Tone.Transport.bpm.value;
+                const targetSeconds = val.beatDur * (60 / currentBpm);
+                
+                triggerSlice(time, val.offset, val.dur, pitchRate, targetSeconds);
+            }, events);
+
+            Tone.Transport.loop = true;
+            Tone.Transport.loopStart = 0;
+            Tone.Transport.loopEnd = `${safeBars}m`;
+            part.start(0);
+        }
+
+        return {
+            start() {
+                if (master.gain && typeof master.gain.rampTo === "function") {
+                    master.gain.rampTo(1, 0.01);
+                } else if (master.gain) {
+                    master.gain.value = 1;
+                }
+                Tone.Transport.position = "0:0:0";
+                Tone.Transport.start("+0.05");
+            },
+            stop() {
+                Tone.Transport.stop();
+                if (master.gain && typeof master.gain.rampTo === "function") {
+                    master.gain.rampTo(0, 0.01);
+                } else if (master.gain) {
+                    master.gain.value = 0;
+                }
+            },
+            update(params) {
+                const {
+                    origBpm,
+                    targetBpm,
+                    semitones,
+                    bars,
+                    transientMs,
+                    xfadeMs,
+                    tailLoop,
+                    tailMs,
+                } = params;
+
+                transientSec = clamp(transientMs / 1000, 0, 0.25);
+                xfadeSec = clamp(xfadeMs / 1000, 0, 0.05);
+                tailLoopEnabled = Boolean(tailLoop);
+                tailWindowSec = clamp(tailMs / 1000, 0.01, 0.5);
+
+                pitchRate =
+                    typeof Tone.intervalToFrequencyRatio === "function"
+                        ? Tone.intervalToFrequencyRatio(semitones)
+                        : Math.pow(2, semitones / 12);
+
+                if (typeof Tone.Transport.bpm?.rampTo === "function") {
+                    Tone.Transport.bpm.rampTo(targetBpm, 0.08);
+                } else if (Tone.Transport.bpm) {
+                    Tone.Transport.bpm.value = targetBpm;
+                }
+
+                const needsRebuild =
+                    currentOrigBpm !== origBpm || currentBars !== bars;
+
+                if (needsRebuild) {
+                    currentOrigBpm = origBpm;
+                    currentBars = bars;
+                    rebuildLoop(origBpm, bars);
+                }
+            },
+            dispose() {
+                Tone.Transport.stop();
+                if (part) part.dispose();
+                Tone.Transport.cancel(0);
+                highpass.dispose();
+                limiter.dispose();
+                master.dispose();
+            },
+        };
+    }
+
+    function createTextureEngine(buffer) {
+        const limiter = new Tone.Limiter(-1).toDestination();
+        const player = new Tone.GrainPlayer(buffer);
+        player.loop = true;
+        player.connect(limiter);
+
+        return {
+            start() {
+                player.start();
+            },
+            stop() {
+                player.stop();
+            },
+            update(params) {
+                const { origBpm, targetBpm, semitones, grainSize, overlap } = params;
+                const rate = clamp(targetBpm / origBpm, 0.25, 4);
+
+                if (player.playbackRate && typeof player.playbackRate.rampTo === "function") {
+                    player.playbackRate.rampTo(rate, 0.08);
+                } else {
+                    player.playbackRate = rate;
+                }
+
+                if (player.detune && typeof player.detune.rampTo === "function") {
+                    player.detune.rampTo(semitones * 100, 0.08);
+                } else {
+                    player.detune = semitones * 100;
+                }
+
+                player.grainSize = grainSize;
+                player.overlap = overlap;
+            },
+            dispose() {
+                player.dispose();
+                limiter.dispose();
+            },
+        };
+    }
+
+    function rebuildEngine() {
+        if (!audioBuffer) return;
+        const wasPlaying = isPlaying;
+        stopPlayback();
+
+        if (engine) {
+            engine.dispose();
+            engine = null;
+        }
+
+        engine = currentMode === "beats" ? createBeatsEngine(audioBuffer, detectedTransients) : createTextureEngine(audioBuffer);
+        updateCalculations();
+
+        if (wasPlaying) startPlayback();
+    }
+
+    function updateCalculations() {
+        const origBpm = clamp(safeNumber(els.inputOrigBpm.value, 130), 30, 300);
+        const targetBpm = clamp(safeNumber(els.sliderTargetBpm.value, 130), 30, 300);
+        const semitones = clamp(safeNumber(els.sliderPitch.value, 0), -24, 24);
+
+        els.valOrigBpm.innerText = String(origBpm);
+        els.valTargetBpm.innerText = String(targetBpm);
+        els.valPitch.innerText = String(semitones);
+
+        // Beats settings
+        const bars = clamp(parseInt(els.inputBars.value, 10) || 1, 1, 16);
+        els.valBars.innerText = String(bars);
+
+        const transientMs = clamp(safeNumber(els.sliderTransient.value, 30), 0, 120);
+        els.valTransient.innerText = String(transientMs);
+
+        const xfadeMs = clamp(safeNumber(els.sliderXfade.value, 6), 0, 30);
+        els.valXfade.innerText = String(xfadeMs);
+
+        const tailLoop = Boolean(els.toggleTailLoop.checked);
+        const tailMs = clamp(safeNumber(els.sliderTail.value, 80), 10, 200);
+        els.valTail.innerText = String(tailMs);
+        els.sliderTail.disabled = !tailLoop;
+
+        // Texture settings
+        const grainSize = clamp(safeNumber(els.sliderGrain.value, 0.07), 0.01, 0.3);
+        const overlap = clamp(safeNumber(els.sliderOverlap.value, 0.03), 0, 0.2);
+        els.valGrain.innerText = `${grainSize.toFixed(2)}s`;
+        els.valOverlap.innerText = `${overlap.toFixed(2)}s`;
+
+        if (!engine) return;
+
+        engine.update({
+            origBpm,
+            targetBpm,
+            semitones,
+            bars,
+            transientMs,
+            xfadeMs,
+            tailLoop,
+            tailMs,
+            grainSize,
+            overlap,
+        });
+    }
+
+    function startPlayback() {
+        if (!engine) return;
+        engine.start();
+        isPlaying = true;
+        els.playBtn.innerText = "Stop Loop";
+    }
+
+    function stopPlayback() {
+        if (!engine) return;
+        engine.stop();
+        isPlaying = false;
+        els.playBtn.innerText = "Play Loop";
+    }
+
+    // --- UI EVENT WIRING ---
+    els.btnBeats.addEventListener("click", () => setMode("beats"));
+    els.btnTexture.addEventListener("click", () => setMode("texture"));
+
+    [
+        els.inputOrigBpm,
+        els.sliderTargetBpm,
+        els.sliderPitch,
+        els.inputBars,
+        els.sliderTransient,
+        els.sliderXfade,
+        els.toggleTailLoop,
+        els.sliderTail,
+        els.sliderGrain,
+        els.sliderOverlap,
+    ].forEach((el) => {
+        el.addEventListener("input", updateCalculations);
+        el.addEventListener("change", updateCalculations);
+    });
+
+    els.fileInput.addEventListener("change", async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        await Tone.start();
+        const url = URL.createObjectURL(file);
+        const buffer = new Tone.ToneAudioBuffer(
+            url,
+            () => {
+                audioBuffer = buffer;
+                detectedTransients = analyzeTransients(buffer);
+                drawWaveform(buffer, detectedTransients);
+                URL.revokeObjectURL(url);
+                autoDetectBars();
+                rebuildEngine();
+                els.playBtn.innerText = "Play Loop";
+            },
+            (err) => {
+                URL.revokeObjectURL(url);
+                // eslint-disable-next-line no-console
+                console.error(err);
+                alert("Failed to load audio file.");
+            },
+        );
+    });
+
+    els.playBtn.addEventListener("click", async () => {
+        if (!audioBuffer) return alert("Please upload a file first!");
+        if (!engine) rebuildEngine();
+
+        await Tone.start();
+        if (isPlaying) {
+            stopPlayback();
+        } else {
+            startPlayback();
+        }
+    });
+
+    // Unlock AudioContext on the first user interaction (autoplay policy).
+    document.addEventListener(
+        "pointerdown",
+        async () => {
+            await Tone.start();
+        },
+        { once: true },
+    );
+
+    // Init UI state
+    setMode("beats");
+    updateCalculations();
+</script>
+
+</body>
+</html>

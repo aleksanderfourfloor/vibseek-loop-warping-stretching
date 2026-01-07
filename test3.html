@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tone.js Transient Detection Test</title>
+    <!-- Load Tone.js from CDN -->
+    <script src="cdnjs.cloudflare.com"></script>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #121212; color: white; }
+        button { padding: 15px 30px; font-size: 1.2rem; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 5px; }
+        #visual { width: 100px; height: 100px; background: #333; margin-top: 20px; border-radius: 50%; transition: transform 0.05s; }
+    </style>
+</head>
+<body>
+    <h1>Percussive Transient Detector</h1>
+    <button id="playBtn">Click to Start / Stop</button>
+    <div id="visual"></div>
+    <p>Open Console (F12) to see detection logs</p>
+
+    <script>
+        const playBtn = document.getElementById("playBtn");
+        const visual = document.getElementById("visual");
+
+        // 1. High Pass Filter: Removes low "thump" to focus on the sharp attack
+        const hpFilter = new Tone.Filter(2000, "highpass").toDestination();
+
+        // 2. Follower: Tracks the amplitude envelope with rapid response
+        const follower = new Tone.Follower(0.005, 0.1).connect(hpFilter);
+
+        // 3. Audio Loop: Using a built-in Tone.js drum loop for immediate testing
+        const player = new Tone.Player({
+            url: "https://tonejs.github.io/audio/drum-samples/conga-rhythm.mp3",
+            loop: true,
+            autostart: false
+        }).connect(follower);
+
+        let isAboveThreshold = false;
+        const threshold = 0.12; // Tweak this based on the loop's loudness
+
+        // 4. Detection Loop: Check the follower value every 10ms
+        setInterval(() => {
+            if (Tone.context.state !== "running") return;
+
+            const currentLevel = follower.getValue();
+            
+            if (currentLevel > threshold && !isAboveThreshold) {
+                // SUCCESS: Transient detected!
+                console.log("%c Transient Detected! ", "background: #222; color: #bada55", currentLevel.toFixed(3));
+                isAboveThreshold = true;
+                
+                // Visual feedback
+                visual.style.transform = "scale(1.5)";
+                visual.style.background = "#00ff00";
+            } else if (currentLevel < threshold) {
+                isAboveThreshold = false;
+                visual.style.transform = "scale(1)";
+                visual.style.background = "#333";
+            }
+        }, 10);
+
+        // 5. Handle Start/Stop (Required by browsers for audio)
+        playBtn.addEventListener("click", async () => {
+            await Tone.start(); // Unlock AudioContext
+            if (player.state === "started") {
+                player.stop();
+            } else {
+                player.start();
+            }
+        });
+    </script>
+</body>
+</html>

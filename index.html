@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vibseek Tone.js Prototype</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a1a; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { background: #2b2b2b; padding: 2rem; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); width: 420px; }
+        h2 { margin-top: 0; color: #ff0055; }
+        
+        .control-group { margin-bottom: 1.5rem; }
+        label { display: block; margin-bottom: 0.5rem; font-size: 0.9rem; color: #ccc; }
+        
+        input[type="range"] { width: 100%; }
+        select, input[type="number"] { width: 100%; background: #333; color: white; border: 1px solid #444; padding: 6px; border-radius: 6px; }
+        .value-display { float: right; font-weight: bold; color: #ff0055; }
+        
+        button { background: #444; color: #fff; border: 1px solid #555; padding: 8px 16px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 10px; font-weight: bold; }
+        button:hover { background: #555; }
+        button.active { background: #ff0055; border-color: #ff0055; }
+        
+        .mode-toggles { display: flex; gap: 10px; margin-bottom: 20px; }
+        .mode-toggles button { margin-top: 0; }
+        
+        input[type="file"] { margin-bottom: 20px; width: 100%; }
+        .settings { border-top: 1px solid #444; padding-top: 15px; margin-top: 15px; }
+        .hidden { display: none; }
+        .hint { color: #888; display: block; margin-top: 6px; font-size: 0.8rem; line-height: 1.2; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Vibseek Prototype</h2>
+    
+    <div class="control-group">
+        <label>1. Upload Loop (WAV/MP3)</label>
+        <input type="file" id="fileInput" accept="audio/*">
+    </div>
+
+    <div class="control-group">
+        <label>2. Warp Mode</label>
+        <div class="mode-toggles">
+            <button id="btnBeats" class="active" type="button">Beats (Ableton-ish)</button>
+            <button id="btnTexture" type="button">Texture (Granular)</button>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label>Original BPM: <span id="valOrigBpm" class="value-display">130</span></label>
+        <input type="number" id="inputOrigBpm" value="130" min="30" max="300" step="0.1">
+    </div>
+
+    <div class="control-group">
+        <label>Target BPM: <span id="valTargetBpm" class="value-display">130</span></label>
+        <input type="range" id="sliderTargetBpm" min="60" max="200" value="130">
+    </div>
+
+    <div class="control-group">
+        <label>Pitch Shift (Semitones): <span id="valPitch" class="value-display">0</span></label>
+        <input type="range" id="sliderPitch" min="-12" max="12" value="0" step="1">
+    </div>
+
+    <div id="beatsSettings" class="control-group settings">
+        <label style="color: #ff0055; font-weight: bold;">Beats Warp (Slice)</label>
+
+        <label style="margin-top: 10px;">
+            <input type="checkbox" id="toggleBeatsAuto" checked>
+            Auto (Ableton-ish defaults)
+        </label>
+
+        <label>Preserve: <span id="valPreserve" class="value-display">1/4</span></label>
+        <select id="selectPreserve">
+            <option value="4n" selected>1/4 (Quarter Notes)</option>
+            <option value="8n">1/8 (Eighth Notes)</option>
+            <option value="16n">1/16 (Sixteenth Notes)</option>
+            <option value="32n">1/32 (Thirty-Second)</option>
+        </select>
+
+        <label style="margin-top: 12px;">Loop Bars: <span id="valBars" class="value-display">1</span></label>
+        <input type="number" id="inputBars" value="1" min="1" max="16" step="1">
+
+        <label style="margin-top: 12px;">Transient (ms): <span id="valTransient" class="value-display">30</span></label>
+        <input type="range" id="sliderTransient" min="0" max="120" value="30" step="1">
+
+        <label style="margin-top: 12px;">Crossfade (ms): <span id="valXfade" class="value-display">10</span></label>
+        <input type="range" id="sliderXfade" min="0" max="30" value="10" step="1">
+
+        <label style="margin-top: 12px;">
+            <input type="checkbox" id="toggleTailLoop" checked>
+            Fill slow tempos (tail loop)
+        </label>
+
+        <label style="margin-top: 12px;">Tail Window (ms): <span id="valTail" class="value-display">80</span></label>
+        <input type="range" id="sliderTail" min="10" max="200" value="80" step="1">
+
+        <small class="hint">
+            Preserve 1/4 is usually best for 4/4 kicks. Crossfade ~6–12ms usually removes clicks without dulling the punch.
+            Transient/Tail mostly matter when slowing down.
+        </small>
+    </div>
+
+    <div id="textureSettings" class="control-group settings hidden">
+        <label style="color: #ff0055; font-weight: bold;">Texture Warp (Granular)</label>
+
+        <label>Grain Size (s): <span id="valGrain" class="value-display">0.07s</span></label>
+        <input type="range" id="sliderGrain" min="0.01" max="0.3" step="0.01" value="0.07">
+
+        <label style="margin-top: 12px;">Overlap (s): <span id="valOverlap" class="value-display">0.03s</span></label>
+        <input type="range" id="sliderOverlap" min="0.00" max="0.15" step="0.01" value="0.03">
+
+        <small class="hint">
+            Texture mode is smoother but less punchy. Smaller grains preserve attack; overlap prevents clicks.
+        </small>
+    </div>
+
+    <button id="playBtn">Play Loop</button>
+</div>
+
+<script>
+    let audioBuffer = null; // Tone.Buffer
+    let currentMode = "beats";
+    let engine = null;
+    let isPlaying = false;
+
+    const els = {
+        fileInput: document.getElementById("fileInput"),
+        playBtn: document.getElementById("playBtn"),
+        btnBeats: document.getElementById("btnBeats"),
+        btnTexture: document.getElementById("btnTexture"),
+
+        inputOrigBpm: document.getElementById("inputOrigBpm"),
+        sliderTargetBpm: document.getElementById("sliderTargetBpm"),
+        sliderPitch: document.getElementById("sliderPitch"),
+
+        valOrigBpm: document.getElementById("valOrigBpm"),
+        valTargetBpm: document.getElementById("valTargetBpm"),
+        valPitch: document.getElementById("valPitch"),
+
+        beatsSettings: document.getElementById("beatsSettings"),
+        toggleBeatsAuto: document.getElementById("toggleBeatsAuto"),
+        selectPreserve: document.getElementById("selectPreserve"),
+        inputBars: document.getElementById("inputBars"),
+        sliderTransient: document.getElementById("sliderTransient"),
+        sliderXfade: document.getElementById("sliderXfade"),
+        toggleTailLoop: document.getElementById("toggleTailLoop"),
+        sliderTail: document.getElementById("sliderTail"),
+
+        valPreserve: document.getElementById("valPreserve"),
+        valBars: document.getElementById("valBars"),
+        valTransient: document.getElementById("valTransient"),
+        valXfade: document.getElementById("valXfade"),
+        valTail: document.getElementById("valTail"),
+
+        textureSettings: document.getElementById("textureSettings"),
+        sliderGrain: document.getElementById("sliderGrain"),
+        sliderOverlap: document.getElementById("sliderOverlap"),
+        valGrain: document.getElementById("valGrain"),
+        valOverlap: document.getElementById("valOverlap"),
+    };
+
+    function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+    }
+
+    function safeNumber(value, fallback) {
+        const numberValue = Number(value);
+        return Number.isFinite(numberValue) ? numberValue : fallback;
+    }
+
+    function parseDenom(subdivision) {
+        // "4n" -> 4, "8n" -> 8, ...
+        const match = String(subdivision).match(/^(\d+)n$/);
+        if (!match) return 4;
+        return clamp(parseInt(match[1], 10), 1, 128);
+    }
+
+    function computeBeatsAutoParams({ origBpm, targetBpm, semitones, preserve }) {
+        const pitchRate =
+            typeof Tone.intervalToFrequencyRatio === "function"
+                ? Tone.intervalToFrequencyRatio(semitones)
+                : Math.pow(2, semitones / 12);
+
+        // 0 when pitched up, 1 at -12 semitones, ~3 at -24.
+        const pitchDownFactor = Math.max(0, 1 / pitchRate - 1);
+
+        const denom = parseDenom(preserve);
+        const preserveFactor = denom <= 4 ? 1 : denom <= 8 ? 0.8 : denom <= 16 ? 0.65 : 0.55;
+
+        const tempoRatio = origBpm > 0 ? targetBpm / origBpm : 1;
+        const slowDownFactor = Math.max(0, 1 / Math.max(tempoRatio, 0.25) - 1);
+
+        const xfadeMs = clamp(Math.round((10 + pitchDownFactor * 10) * preserveFactor), 6, 22);
+        const transientMs = clamp(Math.round((28 + pitchDownFactor * 25) * preserveFactor), 10, 90);
+        const tailMs = clamp(Math.round((80 + pitchDownFactor * 60 + slowDownFactor * 30) * preserveFactor), 20, 200);
+
+        return { xfadeMs, transientMs, tailMs };
+    }
+
+    function setMode(mode) {
+        currentMode = mode;
+
+        els.btnBeats.className = mode === "beats" ? "active" : "";
+        els.btnTexture.className = mode === "texture" ? "active" : "";
+
+        els.beatsSettings.classList.toggle("hidden", mode !== "beats");
+        els.textureSettings.classList.toggle("hidden", mode !== "texture");
+
+        rebuildEngine();
+    }
+
+    function autoDetectBars() {
+        if (!audioBuffer) return;
+        const origBpm = safeNumber(els.inputOrigBpm.value, 130);
+        const beats = (audioBuffer.duration * origBpm) / 60;
+        const bars = Math.max(1, Math.round(beats / 4));
+        els.inputBars.value = String(bars);
+    }
+
+    function createBeatsEngine(buffer) {
+        const master = new Tone.Gain(1).toDestination();
+        const limiter = new Tone.Limiter(-1).connect(master);
+        const highpass = new Tone.Filter(20, "highpass").connect(limiter);
+
+        function getNativeBuffer() {
+            if (typeof AudioBuffer !== "undefined" && buffer instanceof AudioBuffer) return buffer;
+            if (typeof buffer?.get === "function") return buffer.get();
+            return null;
+        }
+
+        const nativeBuffer = getNativeBuffer();
+        const channel0 =
+            nativeBuffer && typeof nativeBuffer.getChannelData === "function" ? nativeBuffer.getChannelData(0) : null;
+        const sampleRate = nativeBuffer ? nativeBuffer.sampleRate : null;
+
+        let loopEventId = null;
+        let offsets = [];
+        let totalSteps = 0;
+        let stepIndex = 0;
+
+        let currentOrigBpm = null;
+        let currentPreserve = null;
+        let currentBars = null;
+
+        let denom = 4;
+        let transientSec = 0.03;
+        let xfadeSec = 0.006;
+        let tailLoopEnabled = true;
+        let tailWindowSec = 0.08;
+        let pitchRate = 1;
+
+        function snapToLowAmplitude(seconds, minSeconds, maxSeconds) {
+            if (!channel0 || !sampleRate) return seconds;
+            const minSample = Math.max(0, Math.floor(minSeconds * sampleRate));
+            const maxSample = Math.min(channel0.length - 1, Math.ceil(maxSeconds * sampleRate));
+            const centerSample = clamp(Math.round(seconds * sampleRate), minSample, maxSample);
+
+            const windowSamples = Math.min(Math.round(0.003 * sampleRate), maxSample - minSample);
+            const from = Math.max(minSample, centerSample - windowSamples);
+            const to = Math.min(maxSample, centerSample + windowSamples);
+
+            let bestSample = centerSample;
+            let bestAbs = Math.abs(channel0[centerSample] ?? 0);
+            for (let i = from; i <= to; i++) {
+                const abs = Math.abs(channel0[i] ?? 0);
+                if (abs < bestAbs) {
+                    bestAbs = abs;
+                    bestSample = i;
+                    if (bestAbs < 1e-5) break;
+                }
+            }
+            return bestSample / sampleRate;
+        }
+
+        function triggerSlice(time, offset, duration, playbackRate) {
+            const bufferDuration = buffer.duration;
+            const safeOffset = clamp(offset, 0, bufferDuration);
+            const safeDuration = clamp(duration, 0, bufferDuration - safeOffset);
+            if (safeDuration < 0.005) return;
+
+            const realDuration = safeDuration / playbackRate;
+            const maxFade = realDuration / 2;
+
+            // Ableton-style "it just works": always apply a small fade (even if UI is set to 0).
+            const minRelease = 0.006;
+            const release = clamp(Math.max(xfadeSec, minRelease), 0.002, maxFade);
+            const attack = clamp(Math.min(0.004, release * 0.35), 0.002, maxFade);
+
+            // Explicit envelope (like "short fades" in Ableton) to prevent clicks at slice boundaries.
+            // Tone.Player's fadeIn/fadeOut does not reliably apply when using the (offset, duration) overload.
+            const src = new Tone.Player(buffer);
+            const env = new Tone.Gain(0);
+            src.connect(env);
+            env.connect(highpass);
+            src.playbackRate = playbackRate;
+
+            const endTime = time + realDuration;
+            const sustainTime = Math.max(time + attack, endTime - release);
+            env.gain.setValueAtTime(0, time);
+            env.gain.linearRampToValueAtTime(1, time + attack);
+            env.gain.setValueAtTime(1, sustainTime);
+            env.gain.linearRampToValueAtTime(0, endTime);
+
+            src.start(time, safeOffset);
+            // Stop slightly after the envelope reaches 0 to avoid truncating during the fade.
+            src.stop(endTime + 0.01);
+
+            const cleanupAt = endTime + 0.2;
+            const delayMs = Math.max(0, (cleanupAt - Tone.now()) * 1000);
+            setTimeout(() => {
+                src.dispose();
+                env.dispose();
+            }, delayMs);
+        }
+
+        function playStep(time, stepIndex, bpm) {
+            const segmentStart = offsets[stepIndex] ?? 0;
+            const segmentEnd = offsets[stepIndex + 1] ?? buffer.duration;
+            const segmentOrigDur = segmentEnd - segmentStart;
+            if (segmentOrigDur < 0.005) return;
+
+            const stepTargetDur = (60 / bpm) * (4 / denom);
+            const stepEnd = time + stepTargetDur;
+
+            // Convert the step duration into buffer-time based on pitch (playbackRate).
+            const maxBufferToConsume = stepTargetDur * pitchRate;
+            const mainDur = clamp(Math.min(segmentOrigDur, maxBufferToConsume), 0, segmentOrigDur);
+            triggerSlice(time, segmentStart, mainDur, pitchRate);
+
+            const mainRealDur = mainDur / pitchRate;
+            if (mainRealDur + 1e-6 >= stepTargetDur) return;
+            if (!tailLoopEnabled) return;
+
+            const transient = clamp(transientSec, 0, segmentOrigDur);
+            const tailStart = clamp(segmentEnd - tailWindowSec, segmentStart + transient, segmentEnd);
+            const tailLen = segmentEnd - tailStart;
+            if (tailLen < 0.01) return;
+
+            const tailRealLen = tailLen / pitchRate;
+            const overlapReal = clamp(Math.max(xfadeSec, 0.001), 0, tailRealLen / 2);
+            const intervalReal = Math.max(0.005, tailRealLen - overlapReal);
+
+            // Start looping slightly before the end of the slice to crossfade.
+            let loopTime = Math.max(time, time + mainRealDur - overlapReal);
+            let guard = 0;
+            while (loopTime < stepEnd && guard < 64) {
+                const dur = Math.min(tailLen, (stepEnd - loopTime) * pitchRate);
+                if (dur < 0.005) break;
+                triggerSlice(loopTime, tailStart, dur, pitchRate);
+                loopTime += intervalReal;
+                guard++;
+            }
+        }
+
+        function rebuildLoop(origBpm, preserve, bars) {
+            denom = parseDenom(preserve);
+
+            const safeOrigBpm = clamp(origBpm, 30, 300);
+            const safeBars = clamp(bars, 1, 16);
+
+            const stepOrigDur = (60 / safeOrigBpm) * (4 / denom);
+            totalSteps = safeBars * denom;
+
+            const expectedLoopDur = stepOrigDur * totalSteps;
+            const gridScale =
+                expectedLoopDur > 0 ? clamp(buffer.duration / expectedLoopDur, 0.5, 2) : 1;
+
+            offsets = new Array(totalSteps + 1);
+            for (let i = 0; i <= totalSteps; i++) {
+                offsets[i] = i * stepOrigDur * gridScale;
+            }
+            offsets[totalSteps] = buffer.duration;
+
+            // Snap boundaries slightly to low-amplitude points to reduce start clicks without smearing transients.
+            for (let i = 1; i < totalSteps; i++) {
+                const min = offsets[i - 1] + (sampleRate ? 1 / sampleRate : 0);
+                const max = offsets[i + 1] - (sampleRate ? 1 / sampleRate : 0);
+                offsets[i] = snapToLowAmplitude(offsets[i], min, max);
+            }
+
+            if (loopEventId != null) {
+                Tone.Transport.clear(loopEventId);
+                loopEventId = null;
+            }
+
+            stepIndex = 0;
+            loopEventId = Tone.Transport.scheduleRepeat((time) => {
+                const bpm = safeNumber(Tone.Transport.bpm?.value, safeNumber(els.sliderTargetBpm.value, 130));
+                playStep(time, stepIndex, bpm);
+                stepIndex = (stepIndex + 1) % totalSteps;
+            }, preserve, 0);
+
+            Tone.Transport.loop = true;
+            Tone.Transport.loopStart = 0;
+            Tone.Transport.loopEnd = `${safeBars}m`;
+        }
+
+        return {
+            start() {
+                stepIndex = 0;
+                if (master.gain && typeof master.gain.rampTo === "function") {
+                    master.gain.rampTo(1, 0.01);
+                } else if (master.gain) {
+                    master.gain.value = 1;
+                }
+                Tone.Transport.position = "0:0:0";
+                Tone.Transport.start("+0.05");
+            },
+            stop() {
+                Tone.Transport.stop();
+                if (master.gain && typeof master.gain.rampTo === "function") {
+                    master.gain.rampTo(0, 0.01);
+                } else if (master.gain) {
+                    master.gain.value = 0;
+                }
+            },
+            update(params) {
+                const {
+                    origBpm,
+                    targetBpm,
+                    semitones,
+                    preserve,
+                    bars,
+                    transientMs,
+                    xfadeMs,
+                    tailLoop,
+                    tailMs,
+                } = params;
+
+                transientSec = clamp(transientMs / 1000, 0, 0.25);
+                xfadeSec = clamp(xfadeMs / 1000, 0, 0.05);
+                tailLoopEnabled = Boolean(tailLoop);
+                tailWindowSec = clamp(tailMs / 1000, 0.01, 0.5);
+
+                pitchRate =
+                    typeof Tone.intervalToFrequencyRatio === "function"
+                        ? Tone.intervalToFrequencyRatio(semitones)
+                        : Math.pow(2, semitones / 12);
+
+                if (typeof Tone.Transport.bpm?.rampTo === "function") {
+                    Tone.Transport.bpm.rampTo(targetBpm, 0.08);
+                } else if (Tone.Transport.bpm) {
+                    Tone.Transport.bpm.value = targetBpm;
+                }
+
+                const needsRebuild =
+                    currentOrigBpm !== origBpm || currentPreserve !== preserve || currentBars !== bars;
+
+                if (needsRebuild) {
+                    currentOrigBpm = origBpm;
+                    currentPreserve = preserve;
+                    currentBars = bars;
+                    rebuildLoop(origBpm, preserve, bars);
+                }
+            },
+            dispose() {
+                Tone.Transport.stop();
+                if (loopEventId != null) {
+                    Tone.Transport.clear(loopEventId);
+                    loopEventId = null;
+                }
+                Tone.Transport.cancel(0);
+                highpass.dispose();
+                limiter.dispose();
+                master.dispose();
+            },
+        };
+    }
+
+    function createTextureEngine(buffer) {
+        const limiter = new Tone.Limiter(-1).toDestination();
+        const player = new Tone.GrainPlayer(buffer);
+        player.loop = true;
+        player.connect(limiter);
+
+        return {
+            start() {
+                player.start();
+            },
+            stop() {
+                player.stop();
+            },
+            update(params) {
+                const { origBpm, targetBpm, semitones, grainSize, overlap } = params;
+                const rate = clamp(targetBpm / origBpm, 0.25, 4);
+
+                if (player.playbackRate && typeof player.playbackRate.rampTo === "function") {
+                    player.playbackRate.rampTo(rate, 0.08);
+                } else {
+                    player.playbackRate = rate;
+                }
+
+                if (player.detune && typeof player.detune.rampTo === "function") {
+                    player.detune.rampTo(semitones * 100, 0.08);
+                } else {
+                    player.detune = semitones * 100;
+                }
+
+                player.grainSize = grainSize;
+                player.overlap = overlap;
+            },
+            dispose() {
+                player.dispose();
+                limiter.dispose();
+            },
+        };
+    }
+
+    function rebuildEngine() {
+        if (!audioBuffer) return;
+        const wasPlaying = isPlaying;
+        stopPlayback();
+
+        if (engine) {
+            engine.dispose();
+            engine = null;
+        }
+
+        engine = currentMode === "beats" ? createBeatsEngine(audioBuffer) : createTextureEngine(audioBuffer);
+        updateCalculations();
+
+        if (wasPlaying) startPlayback();
+    }
+
+    function updateCalculations() {
+        const origBpm = clamp(safeNumber(els.inputOrigBpm.value, 130), 30, 300);
+        const targetBpm = clamp(safeNumber(els.sliderTargetBpm.value, 130), 30, 300);
+        const semitones = clamp(safeNumber(els.sliderPitch.value, 0), -24, 24);
+
+        els.valOrigBpm.innerText = String(origBpm);
+        els.valTargetBpm.innerText = String(targetBpm);
+        els.valPitch.innerText = String(semitones);
+
+        // Beats settings
+        const preserve = els.selectPreserve.value;
+        const preserveLabel = els.selectPreserve.options[els.selectPreserve.selectedIndex]?.textContent ?? preserve;
+        els.valPreserve.innerText = preserveLabel.split(" ")[0] ?? preserveLabel;
+
+        const bars = clamp(parseInt(els.inputBars.value, 10) || 1, 1, 16);
+        els.valBars.innerText = String(bars);
+
+        const beatsAuto = Boolean(els.toggleBeatsAuto.checked);
+        if (beatsAuto) {
+            const auto = computeBeatsAutoParams({ origBpm, targetBpm, semitones, preserve });
+            els.sliderXfade.value = String(auto.xfadeMs);
+            els.sliderTransient.value = String(auto.transientMs);
+            els.sliderTail.value = String(auto.tailMs);
+            els.toggleTailLoop.checked = true;
+        }
+
+        els.sliderXfade.disabled = beatsAuto;
+        els.sliderTransient.disabled = beatsAuto;
+        els.toggleTailLoop.disabled = beatsAuto;
+
+        const transientMs = clamp(safeNumber(els.sliderTransient.value, 30), 0, 120);
+        els.valTransient.innerText = String(transientMs);
+
+        const xfadeMs = clamp(safeNumber(els.sliderXfade.value, 6), 0, 30);
+        els.valXfade.innerText = String(xfadeMs);
+
+        const tailLoop = Boolean(els.toggleTailLoop.checked);
+        const tailMs = clamp(safeNumber(els.sliderTail.value, 80), 10, 200);
+        els.valTail.innerText = String(tailMs);
+        els.sliderTail.disabled = beatsAuto || !tailLoop;
+
+        // Texture settings
+        const grainSize = clamp(safeNumber(els.sliderGrain.value, 0.07), 0.01, 0.3);
+        const overlap = clamp(safeNumber(els.sliderOverlap.value, 0.03), 0, 0.2);
+        els.valGrain.innerText = `${grainSize.toFixed(2)}s`;
+        els.valOverlap.innerText = `${overlap.toFixed(2)}s`;
+
+        if (!engine) return;
+
+        engine.update({
+            origBpm,
+            targetBpm,
+            semitones,
+            preserve,
+            bars,
+            transientMs,
+            xfadeMs,
+            tailLoop,
+            tailMs,
+            grainSize,
+            overlap,
+        });
+    }
+
+    function startPlayback() {
+        if (!engine) return;
+        engine.start();
+        isPlaying = true;
+        els.playBtn.innerText = "Stop Loop";
+    }
+
+    function stopPlayback() {
+        if (!engine) return;
+        engine.stop();
+        isPlaying = false;
+        els.playBtn.innerText = "Play Loop";
+    }
+
+    // --- UI EVENT WIRING ---
+    els.btnBeats.addEventListener("click", () => setMode("beats"));
+    els.btnTexture.addEventListener("click", () => setMode("texture"));
+
+    [
+        els.inputOrigBpm,
+        els.sliderTargetBpm,
+        els.sliderPitch,
+        els.toggleBeatsAuto,
+        els.selectPreserve,
+        els.inputBars,
+        els.sliderTransient,
+        els.sliderXfade,
+        els.toggleTailLoop,
+        els.sliderTail,
+        els.sliderGrain,
+        els.sliderOverlap,
+    ].forEach((el) => {
+        el.addEventListener("input", updateCalculations);
+        el.addEventListener("change", updateCalculations);
+    });
+
+    els.fileInput.addEventListener("change", async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        await Tone.start();
+        const url = URL.createObjectURL(file);
+        const buffer = new Tone.ToneAudioBuffer(
+            url,
+            () => {
+                audioBuffer = buffer;
+                URL.revokeObjectURL(url);
+                autoDetectBars();
+                rebuildEngine();
+                els.playBtn.innerText = "Play Loop";
+            },
+            (err) => {
+                URL.revokeObjectURL(url);
+                // eslint-disable-next-line no-console
+                console.error(err);
+                alert("Failed to load audio file.");
+            },
+        );
+    });
+
+    els.playBtn.addEventListener("click", async () => {
+        if (!audioBuffer) return alert("Please upload a file first!");
+        if (!engine) rebuildEngine();
+
+        await Tone.start();
+        if (isPlaying) {
+            stopPlayback();
+        } else {
+            startPlayback();
+        }
+    });
+
+    // Unlock AudioContext on the first user interaction (autoplay policy).
+    document.addEventListener(
+        "pointerdown",
+        async () => {
+            await Tone.start();
+        },
+        { once: true },
+    );
+
+    // Init UI state
+    setMode("beats");
+    updateCalculations();
+</script>
+
+</body>
+</html>

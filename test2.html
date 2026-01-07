@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Vibseek Grid Slicer (Ableton Beats Mode)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #1a1a1a; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { background: #2b2b2b; padding: 2rem; border-radius: 12px; width: 400px; }
+        .control-group { margin-bottom: 1.5rem; border-bottom: 1px solid #444; padding-bottom: 1rem; }
+        label { display: block; margin-bottom: 0.5rem; color: #ccc; }
+        input[type="range"], input[type="number"], input[type="file"] { width: 100%; box-sizing: border-box; }
+        .value-display { float: right; color: #00ff88; font-weight: bold; }
+        button { background: #00ff88; color: #000; border: none; padding: 12px; width: 100%; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 1rem; }
+        button:hover { background: #00cc6a; }
+        h2 { color: #00ff88; margin-top: 0; }
+        .note { font-size: 0.8rem; color: #888; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Vibseek Grid Slicer</h2>
+    <p class="note">Emulates Ableton "Beats Mode" (Preserve 1/16) by slicing instead of stretching.</p>
+
+    <div class="control-group">
+        <label>1. Upload Loop (WAV/MP3)</label>
+        <input type="file" id="fileInput" accept="audio/*">
+    </div>
+
+    <div class="control-group">
+        <label>Original BPM (Critical!): <span id="valOrigBpm" class="value-display">134</span></label>
+        <input type="number" id="inputOrigBpm" value="134" style="background:#333; color:#fff; border:1px solid #555; padding:5px;" onchange="updateParams()">
+    </div>
+
+    <div class="control-group">
+        <label>Target BPM: <span id="valTargetBpm" class="value-display">125</span></label>
+        <input type="range" id="sliderTargetBpm" min="60" max="200" value="125" oninput="updateParams()">
+    </div>
+
+    <div class="control-group">
+        <label>Pitch (Semitones): <span id="valPitch" class="value-display">0</span></label>
+        <input type="range" id="sliderPitch" min="-12" max="12" value="0" step="1" oninput="updateParams()">
+    </div>
+
+    <button id="playBtn">Start Slicer Engine</button>
+</div>
+
+<script>
+    let player = null;
+    let loopEvent = null;
+    let isPlaying = false;
+    let audioBuffer = null;
+
+    // UI Elements
+    const fileInput = document.getElementById('fileInput');
+    const playBtn = document.getElementById('playBtn');
+    
+    // 1. LOAD FILE
+    fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if(!file) return;
+        await Tone.start();
+        const url = URL.createObjectURL(file);
+        audioBuffer = new Tone.ToneAudioBuffer(url, () => {
+            console.log("Buffer Loaded");
+            playBtn.innerText = "Start Slicer Engine";
+        });
+    });
+
+    // 2. THE SLICER ENGINE
+    async function startSlicer() {
+        if(!audioBuffer) return alert("Please upload a file first!");
+        await Tone.start();
+        
+        // Setup Player (One-shot, we will trigger it repeatedly)
+        if(player) player.dispose();
+        player = new Tone.Player(audioBuffer).toDestination();
+        player.fadeIn = 0.005;  // Tiny fade to prevent clicks
+        player.fadeOut = 0.005; // Tiny fade to prevent clicks
+
+        // Setup Transport
+        Tone.Transport.stop();
+        Tone.Transport.cancel();
+        
+        const origBpm = parseFloat(document.getElementById('inputOrigBpm').value);
+        
+        // Calculate the "Slice Grid" based on ORIGINAL BPM
+        // 16th note duration in seconds at original tempo
+        const secondsPerBeatOrig = 60 / origBpm;
+        const sliceDurationOrig = secondsPerBeatOrig / 4; 
+
+        // Create a repeating loop event
+        // This runs at the TARGET BPM (controlled by Tone.Transport)
+        let stepIndex = 0;
+        
+        loopEvent = Tone.Transport.scheduleRepeat((time) => {
+            // A. Calculate Playback Rate (Pitch)
+            const semitones = parseFloat(document.getElementById('sliderPitch').value);
+            const playbackRate = Tone.intervalToFrequencyRatio(semitones);
+            player.playbackRate = playbackRate;
+
+            // B. Calculate Offset (Where to cut in the original file)
+            // We assume the file is a perfect loop. We cycle through steps 0-15 (one bar).
+            // If your loop is longer, you'd increase the modulo (e.g., % 32 for 2 bars)
+            // For now, let's assume it detects the buffer length to guess bars? 
+            // Let's keep it simple: Infinite cycling through the file based on buffer duration.
+            
+            // Safer way: Move offset forward by one original-slice-length every trigger
+            // Wrap around when we hit the end of the buffer
+            let offset = stepIndex * sliceDurationOrig;
+            
+            // Wrap logic: If offset is beyond buffer, reset
+            if (offset >= audioBuffer.duration - 0.05) {
+                stepIndex = 0;
+                offset = 0;
+            }
+
+            // C. Trigger the Slice
+            // start(startTime, offsetInFile, durationOfSlice)
+            // We divide duration by playbackRate so the slice plays fully even if pitched up
+            player.start(time, offset, sliceDurationOrig);
+
+            stepIndex++;
+
+        }, "16n"); // Trigger every 16th note at TARGET BPM
+
+        Tone.Transport.start();
+        isPlaying = true;
+        playBtn.innerText = "Stop Engine";
+        updateParams();
+    }
+
+    function stopSlicer() {
+        Tone.Transport.stop();
+        if(player) player.stop();
+        isPlaying = false;
+        playBtn.innerText = "Start Slicer Engine";
+    }
+
+    // 3. LIVE UPDATES
+    function updateParams() {
+        const targetBpm = parseFloat(document.getElementById('sliderTargetBpm').value);
+        const pitch = parseFloat(document.getElementById('sliderPitch').value);
+        
+        // Update UI
+        document.getElementById('valTargetBpm').innerText = targetBpm;
+        document.getElementById('valPitch').innerText = pitch;
+        
+        // Update Transport (Engine Speed)
+        Tone.Transport.bpm.value = targetBpm; 
+    }
+
+    playBtn.addEventListener('click', () => {
+        if(isPlaying) stopSlicer();
+        else startSlicer();
+    });
+
+</script>
+</body>
+</html>

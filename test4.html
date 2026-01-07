@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Vibseek Warper V7 (Universal Transients)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121212; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { background: #1e1e1e; padding: 2rem; border-radius: 12px; width: 440px; border: 1px solid #333; box-shadow: 0 10px 50px rgba(0,0,0,0.5); }
+        .control-group { margin-bottom: 1.25rem; border-bottom: 1px solid #2a2a2a; padding-bottom: 1rem; }
+        label { display: block; margin-bottom: 0.5rem; color: #aaa; font-size: 0.9rem; font-weight: 500;}
+        .value-display { float: right; color: #00ff99; font-weight: bold; }
+        input[type="range"], input[type="number"], input[type="file"] { width: 100%; box-sizing: border-box; background: #2a2a2a; color: white; border: 1px solid #444; padding: 8px; border-radius: 4px; outline: none; }
+        input[type="range"] { accent-color: #00ff99; }
+        button#playBtn { background: #00ff99; color: #000; border: none; padding: 16px; width: 100%; font-weight: bold; cursor: pointer; border-radius: 6px; font-size: 1.1rem; margin-top: 10px; }
+        .status { color: #666; font-size: 0.75rem; text-align: center; margin-top: 15px; }
+        #canvasParams { width: 100%; height: 60px; background: #000; margin-bottom: 15px; border-radius: 4px; border: 1px solid #444; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2 style="color:#00ff99; margin-top:0;">Vibseek Warper V7</h2>
+    <p style="font-size: 0.85rem; color: #ccc;">
+        <strong>Preserve: Transients</strong><br>
+        Dynamically maps every hit to the beat. No fixed grid.
+    </p>
+
+    <canvas id="canvasParams"></canvas>
+
+    <div class="control-group">
+        <label>1. Upload Loop</label>
+        <input type="file" id="fileInput" accept="audio/*">
+    </div>
+
+    <div class="control-group">
+        <label>Sensitivity: <span id="valThresh" class="value-display">0.10</span></label>
+        <input type="range" id="sliderThresh" min="0.01" max="0.5" step="0.01" value="0.1" oninput="reAnalyze()">
+    </div>
+
+    <div class="control-group">
+        <label>Original BPM: <span id="valOrigBpm" class="value-display">134</span></label>
+        <input type="number" id="inputOrigBpm" value="134" onchange="updateUI()">
+    </div>
+
+    <div class="control-group">
+        <label>Target BPM: <span id="valTargetBpm" class="value-display">125</span></label>
+        <input type="range" id="sliderTargetBpm" min="60" max="200" value="125" oninput="updateUI()">
+    </div>
+
+    <div class="control-group" style="border:none">
+        <label>Pitch (Semitones): <span id="valPitch" class="value-display">0</span></label>
+        <input type="range" id="sliderPitch" min="-12" max="12" value="0" step="1" oninput="updateUI()">
+    </div>
+
+    <button id="playBtn">Start Warping</button>
+    <div id="status" class="status">Waiting for file...</div>
+</div>
+
+<script>
+    let player = null;
+    let isPlaying = false;
+    let audioBuffer = null;
+    let transients = []; 
+
+    const fileInput = document.getElementById('fileInput');
+    const playBtn = document.getElementById('playBtn');
+    const statusDiv = document.getElementById('status');
+    const canvas = document.getElementById('canvasParams');
+    const ctx = canvas.getContext('2d');
+
+    // Prevent no-op clicks before a file is loaded
+    playBtn.disabled = true;
+
+    // 1. Load Audio
+    fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if(!file) return;
+        await Tone.start();
+        statusDiv.innerText = "Analyzing...";
+        const url = URL.createObjectURL(file);
+        audioBuffer = new Tone.ToneAudioBuffer(url, () => {
+            reAnalyze();
+            statusDiv.innerText = "Ready.";
+            // Allow starting the engine now that audio is loaded
+            playBtn.disabled = false;
+        });
+    });
+
+    // 2. DETECT TRANSIENTS (Analysis)
+    function reAnalyze() {
+        if(!audioBuffer) return;
+        const threshold = parseFloat(document.getElementById('sliderThresh').value);
+        document.getElementById('valThresh').innerText = threshold.toFixed(2);
+
+        const channelData = audioBuffer.getChannelData(0); 
+        transients = [];
+        const bufferSize = 1024; 
+        const minDistance = 0.05; // 50ms minimum gap between hits
+        let lastHitTime = -100;
+
+        // Always add the very start
+        transients.push(0);
+
+        for (let i = 0; i < channelData.length; i += bufferSize) {
+            let sum = 0;
+            // Simple RMS calculation
+            for (let j = 0; j < bufferSize; j++) {
+                if (channelData[i+j]) sum += (channelData[i+j] * channelData[i+j]);
+            }
+            let rms = Math.sqrt(sum / bufferSize);
+            let time = i / audioBuffer.context.sampleRate;
+
+            if (rms > threshold && (time - lastHitTime) > minDistance) {
+                transients.push(time);
+                lastHitTime = time;
+            }
+        }
+        drawTransients();
+    }
+
+    function drawTransients() {
+        ctx.fillStyle = '#111';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        if(!audioBuffer) return;
+        
+        // Draw Markers
+        ctx.fillStyle = '#00ff99';
+        transients.forEach(t => {
+            let x = (t / audioBuffer.duration) * canvas.width;
+            ctx.fillRect(x, 0, 2, canvas.height);
+        });
+        statusDiv.innerText = `Detected ${transients.length} hits.`;
+    }
+
+    // 3. THE UNIVERSAL ENGINE
+    async function startEngine() {
+        if(!audioBuffer) { statusDiv.innerText = 'Please upload a file first!'; return; }
+        await Tone.start();
+
+        console.log('startEngine: buffer duration', audioBuffer.duration, 'transients', transients.length);
+        statusDiv.innerText = 'Initializing playback...';
+
+        if(player) player.dispose();
+
+        // One-shot player
+        player = new Tone.Player(audioBuffer).toDestination();
+        player.fadeIn = 0.002; 
+        player.fadeOut = 0.002;
+
+        // Sanity check: ensure the player has a buffer attached
+        if (!player.buffer) {
+            console.warn('Player has no buffer');
+            console.log('audioBuffer:', audioBuffer);
+            statusDiv.innerText = 'Error: Player buffer missing. Check console.';
+            return;
+        }
+
+        Tone.Transport.stop();
+        Tone.Transport.cancel(); // Clear old schedules
+
+        const origBpm = parseFloat(document.getElementById('inputOrigBpm').value);
+        
+        // --- THE MAGIC: Map Transients to Beats ---
+        
+        // 1. Calculate the TOTAL musical length of the file in Beats
+        // Formula: DurationSecs * (BPM / 60)
+        const totalDurationBeats = audioBuffer.duration * (origBpm / 60);
+
+        // 2. Schedule every single transient
+        transients.forEach((startTime, index) => {
+            
+            // A. Find "Musical Position" of this hit
+            // If hit is at 1.0s and file is 4.0s long -> position is 0.25 (25%)
+            // Beat = 0.25 * TotalBeats
+            const beatPosition = (startTime / audioBuffer.duration) * totalDurationBeats;
+
+            // B. Schedule Trigger on Transport
+            // Tone.Transport will handle the tempo scaling automatically!
+            // We format the time as "0:0:0" roughly or just pass the Beat float value.
+            // Note: Tone.Transport.schedule expects exact time.
+            
+            // Convert Beat Float to Time String for precision (Bars:Quarters:Sixteenths)
+            // Or use the beat value directly if we handle the transport correctly.
+            // Using a Part is safest for arrays of events.
+        });
+
+        // Simpler Implementation: Tone.Part
+        // Tone.Part takes an array of events: [Time, Payload]
+        // Time is in "Beats" (Quarter Notes).
+        
+        const events = transients.map((startTime, i) => {
+            // Map Time -> Beats (quarter notes)
+            const beatPos = startTime * (origBpm / 60);
+
+            // Convert beat position to Transport-relative time string "bars:quarters:sixteenths"
+            const bars = Math.floor(beatPos / 4);
+            const remainingBeats = beatPos - (bars * 4);
+            const quarters = Math.floor(remainingBeats);
+            const sixteenths = Math.round((remainingBeats - quarters) * 4);
+            const timeStr = `${bars}:${quarters}:${sixteenths}`;
+
+            // Calculate Duration (Distance to next marker)
+            let nextTime = transients[i+1] || audioBuffer.duration;
+            let sliceDuration = nextTime - startTime;
+
+            return {
+                time: timeStr, // Transport-relative time string
+                offset: startTime, // The "What" (in Seconds)
+                dur: sliceDuration, // The "How Long"
+                idx: i
+            };
+        });
+
+        // Debug: log event count and loop info
+        console.log('Scheduling events:', events.length, 'nearestBar:', nearestBar, 'totalDurationBeats:', totalDurationBeats);
+        statusDiv.innerText = `Scheduling ${events.length} slices...`;
+
+        // Create the Part
+        const part = new Tone.Part((time, value) => {
+            const pitch = parseFloat(document.getElementById('sliderPitch').value);
+            // Convert semitones to a playback rate (2^(semitones/12))
+            if (player) player.playbackRate = Math.pow(2, pitch / 12);
+
+            // Debug each trigger
+            console.log('Part trigger', value.idx, time, value);
+            statusDiv.innerText = `Playing slice ${value.idx}`;
+
+            // 1. Monophony: Stop previous slightly BEFORE the new start to avoid canceling it
+            if (player && player.state === "started") {
+                const stopTime = Math.max(time - 0.001, 0);
+                player.stop(stopTime);
+            }
+
+            // 2. Play Slice
+            if (player) player.start(time, value.offset, value.dur);
+
+        }, events.map(e => [e.time, e]));
+
+        // Set Loop Points
+        // We round the total beats to the nearest bar to ensure a clean loop
+        const nearestBar = Math.round(totalDurationBeats / 4) * 4 || 4;
+        
+        part.loop = true;
+        part.loopEnd = nearestBar + "m"; // "4m" = 4 measures
+        part.start(0);
+
+        // Start Transport
+        // Set tempo (use a short ramp for smoothness)
+        Tone.Transport.bpm.rampTo(parseFloat(document.getElementById('sliderTargetBpm').value), 0.01);
+        Tone.Transport.start();
+        
+        isPlaying = true;
+        playBtn.innerText = "Stop Warping";
+        statusDiv.innerText = "Warping Active (Universal Mode)";
+    }
+
+    function updateUI() {
+        const targetBpm = document.getElementById('sliderTargetBpm').value;
+        document.getElementById('valTargetBpm').innerText = targetBpm;
+        // Smoothly ramp the transport BPM so changes take effect during playback
+        Tone.Transport.bpm.rampTo(parseFloat(targetBpm), 0.1);
+        
+        const pitch = parseFloat(document.getElementById('sliderPitch').value);
+        document.getElementById('valPitch').innerText = pitch;
+        // Update playbackRate live when changing pitch
+        if (player) player.playbackRate = Math.pow(2, pitch / 12);
+    }
+    
+    playBtn.addEventListener('click', () => {
+        console.log('playBtn clicked, isPlaying=', isPlaying);
+        if(isPlaying) {
+            Tone.Transport.stop();
+            if(player) player.stop();
+            // Clear parts?
+            Tone.Transport.cancel();
+            playBtn.innerText = "Start Warping";
+            isPlaying = false;
+        } else {
+            startEngine();
+        }
+    });
+
+</script>
+</body>
+</html>
