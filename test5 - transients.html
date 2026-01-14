@@ -194,105 +194,133 @@
         const sampleRate = buffer.sampleRate;
         const len = data.length;
 
-        // 1. High-Pass Filter (120Hz) to remove sub-bass rumble
-        // This isolates the "click" of the kick, preventing false positives from the tail.
-        const hpCutoff = 120;
+        // 1. High-Pass Filter (250Hz) - 1st pass
+        // Removes sub-bass rumble so we detect the "click" of the kick/snare.
+        const hpCutoff = 250;
         const rc = 1.0 / (2 * Math.PI * hpCutoff);
         const dt = 1.0 / sampleRate;
         const alpha = rc / (rc + dt);
-        const filtered = new Float32Array(len);
+        
+        const filtered1 = new Float32Array(len);
         let lastVal = 0;
+        let lastInput = 0;
         for(let i=0; i<len; i++) {
-            // Simple 1-pole Highpass: y[i] = alpha * (y[i-1] + x[i] - x[i-1])
             const input = data[i];
-            const prevInput = (i > 0) ? data[i-1] : 0;
-            const output = alpha * (lastVal + input - prevInput);
-            filtered[i] = output;
+            const output = alpha * (lastVal + input - lastInput);
+            filtered1[i] = output;
             lastVal = output;
+            lastInput = input;
         }
         
-        // 2. Calculate RMS Energy Profile (10ms windows) on FILTERED data
-        const windowSize = Math.floor(0.01 * sampleRate); // 10ms
+        // 2. High-Pass Filter - 2nd pass (Cascade for steeper slope ~12dB/oct)
+        const filtered2 = new Float32Array(len);
+        lastVal = 0;
+        lastInput = 0;
+        for(let i=0; i<len; i++) {
+            const input = filtered1[i];
+            const output = alpha * (lastVal + input - lastInput);
+            filtered2[i] = output;
+            lastVal = output;
+            lastInput = input;
+        }
+        
+        // 3. RMS Energy Profile & Flux (Derivative)
+        const windowSize = Math.floor(0.005 * sampleRate); 
         const numWindows = Math.floor(len / windowSize);
-        const energyProfile = new Float32Array(numWindows);
+        const flux = new Float32Array(numWindows);
+        let prevRms = 0;
         
         for(let i=0; i<numWindows; i++) {
             let sum = 0;
             const start = i * windowSize;
             for(let j=0; j<windowSize; j++) {
                 if (start + j < len) {
-                    const s = filtered[start + j]; // Use filtered signal
+                    const s = filtered2[start + j];
                     sum += s * s;
                 }
             }
-            energyProfile[i] = Math.sqrt(sum / windowSize);
-        }
-
-        // 3. Calculate Spectral Flux (Change in Energy)
-        // This emphasizes the *onset* (attack) and ignores the sustain/tail.
-        const flux = new Float32Array(numWindows);
-        for (let i = 1; i < numWindows; i++) {
-            const diff = energyProfile[i] - energyProfile[i-1];
-            flux[i] = diff > 0 ? diff : 0;
-        }
-
-        // 4. Find Peaks in Flux
-        const peaks = [];
-        const thresholdWindow = Math.floor(0.5 / 0.01); // 0.5s window
-        const multiplier = 1.4; // Sensitivity
-        
-        for (let i = 0; i < numWindows; i++) {
-            // Local average of Flux
-            const start = Math.max(0, i - thresholdWindow);
-            const end = Math.min(numWindows, i + thresholdWindow);
-            let localSum = 0;
-            for (let j = start; j < end; j++) {
-                localSum += flux[j];
-            }
-            const localAvg = localSum / (end - start);
+            const rms = Math.sqrt(sum / windowSize);
             
-            // Threshold + Absolute Floor
-            if (flux[i] > localAvg * multiplier && flux[i] > 0.01) {
-                // Local Maxima Check (Radius 50ms)
+            // Spectral Flux / Onset Strength
+            // We only care about positive changes in energy (attacks)
+            let change = rms - prevRms;
+            if (change < 0) change = 0;
+            
+            flux[i] = change;
+            prevRms = rms;
+        }
+
+        // 4. Adaptive Thresholding on Flux
+        const transients = [0]; // Always start at 0
+        const candidates = [];
+        
+        // Rolling Average params
+        const avgWindowFrames = Math.floor(0.5 / 0.005); // 500ms
+        const halfWindow = Math.floor(avgWindowFrames / 2);
+        const sensitivity = 1.2; // Multiplier for Flux threshold
+        const minFluxThreshold = 0.005; // Minimum absolute flux to consider a hit
+
+        for (let i = 0; i < numWindows; i++) {
+            const start = Math.max(0, i - halfWindow);
+            const end = Math.min(numWindows, i + halfWindow);
+            let sum = 0;
+            for (let j = start; j < end; j++) sum += flux[j];
+            const localAvg = sum / (end - start);
+            
+            const threshold = (localAvg * sensitivity) + minFluxThreshold;
+            
+            if (flux[i] > threshold) {
+                // Local Maxima Check (Radius 15ms -> 3 frames)
                 let isMax = true;
-                const range = 5; // 5 * 10ms = 50ms radius
-                for (let k = Math.max(0, i - range); k <= Math.min(numWindows - 1, i + range); k++) {
+                const peakRadius = 3; // 3 frames = 15ms
+                for (let k = Math.max(0, i - peakRadius); k <= Math.min(numWindows - 1, i + peakRadius); k++) {
                     if (flux[k] > flux[i]) {
                         isMax = false;
                         break;
                     }
                 }
+                
                 if (isMax) {
-                    peaks.push({
-                        time: i * windowSize / sampleRate,
-                        flux: flux[i]
-                    });
-                }
-            }
-        }
-
-        // 4. Pruning (Debounce)
-        const finalTransients = [0]; // Always start at 0
-        peaks.sort((a, b) => a.time - b.time);
-
-        const minDistance = 0.06; // 60ms minimum gap
-
-        if (peaks.length > 0) {
-            // If first peak is very close to 0, ignore it (we already have 0)
-            if (peaks[0].time > 0.02) {
-                finalTransients.push(peaks[0].time);
-            }
-
-            for (let i = 1; i < peaks.length; i++) {
-                const prev = finalTransients[finalTransients.length - 1];
-                const curr = peaks[i].time;
-                if (curr - prev > minDistance) {
-                    finalTransients.push(curr);
+                    candidates.push({ frame: i, val: flux[i] });
                 }
             }
         }
         
-        return finalTransients.sort((a,b) => a-b);
+        // 5. Cluster Pruning (Debounce)
+        // Group nearby candidates and pick the strongest one.
+        const minDistanceFrames = Math.floor(0.06 / 0.005); // 60ms
+        
+        if (candidates.length > 0) {
+            let cluster = [candidates[0]];
+            
+            for(let i=1; i<candidates.length; i++) {
+                const curr = candidates[i];
+                const prev = cluster[cluster.length-1];
+                
+                if (curr.frame - prev.frame <= minDistanceFrames) {
+                    cluster.push(curr);
+                } else {
+                    // Process cluster
+                    let maxC = cluster[0];
+                    for(let c of cluster) if(c.val > maxC.val) maxC = c;
+                    
+                    const time = maxC.frame * windowSize / sampleRate;
+                    if(time > 0.03) transients.push(time);
+                    
+                    // Start new cluster
+                    cluster = [curr];
+                }
+            }
+            // Last cluster
+            if(cluster.length > 0) {
+                let maxC = cluster[0];
+                for(let c of cluster) if(c.val > maxC.val) maxC = c;
+                const time = maxC.frame * windowSize / sampleRate;
+                if(time > 0.03) transients.push(time);
+            }
+        }
+        
+        return transients.sort((a,b) => a-b);
     }
 
     function drawWaveform(buffer, hits) {
